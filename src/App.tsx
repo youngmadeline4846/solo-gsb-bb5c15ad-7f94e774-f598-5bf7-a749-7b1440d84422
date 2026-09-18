@@ -13,6 +13,9 @@ import IssuesPanel from './components/IssuesPanel';
 import RevisionMergePanel from './components/RevisionMergePanel';
 import DriftPanel, { EMPTY_DRIFT_FORM } from './components/DriftPanel';
 import type { DriftForm } from './components/DriftPanel';
+import SilencePanel, { DEFAULT_SILENCE_FORM } from './components/SilencePanel';
+import type { SilenceForm } from './components/SilencePanel';
+import { applySilenceSnap, planSilenceSnap, resolveRange, parseSilenceParams } from './silence';
 import './styles.css';
 
 interface History {
@@ -38,8 +41,11 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showMerge, setShowMerge] = useState(false);
   const [showDrift, setShowDrift] = useState(false);
+  const [showSilence, setShowSilence] = useState(false);
   // 漂移校准表单（锚点选择 + 目标时间输入），面板关闭后保留，重新导入字幕时重置
   const [driftForm, setDriftForm] = useState<DriftForm>(EMPTY_DRIFT_FORM);
+  // 静音吸附表单（连续区间 + 阈值等参数），面板关闭后保留，重新导入字幕时重置
+  const [silenceForm, setSilenceForm] = useState<SilenceForm>(DEFAULT_SILENCE_FORM);
   // 修订稿独立于当前字幕保存：导入不会替换当前时间轴
   const [revision, setRevision] = useState<Subtitle[]>([]);
   const [revisionName, setRevisionName] = useState('');
@@ -47,6 +53,14 @@ export default function App() {
   const { waveform, loadWaveform, dismissWaveform } = useWaveform();
 
   const issues = useMemo(() => detectIssues(subs), [subs]);
+
+  const waveformReady = waveform.status === 'ready';
+
+  // 波形失效（切换视频 / 关闭波形 / 解码失败）后，静音吸附侧栏自动收起：
+  // 面板仅在音频波形就绪时可用
+  useEffect(() => {
+    if (!waveformReady) setShowSilence(false);
+  }, [waveformReady]);
 
   // 对齐计算较重（大文件毫秒到秒级），用 deferred 值避免拖动字幕时的高频更新阻塞交互；
   // 应用合并（applyRevision）始终基于 history.present 即时重算，不受延迟影响。
@@ -102,6 +116,7 @@ export default function App() {
     setRevision([]);
     setRevisionName('');
     setDriftForm(EMPTY_DRIFT_FORM);
+    setSilenceForm(DEFAULT_SILENCE_FORM);
   }, []);
 
   const importSrt = useCallback(
@@ -156,8 +171,27 @@ export default function App() {
     });
   }, [driftForm]);
 
-  const importVideo = useCallback(
-    (file: File) => {
+  // 应用静音吸附：所选连续字幕的起止边界吸附到静音中点（保持顺序、
+  // 每条时长达标且互不重叠），整批作为一次撤销/重做操作
+  const applySilence = useCallback(() => {
+    setHistory((h) => {
+      if (waveform.status !== 'ready' || !waveform.data) return h;
+      const parsed = parseSilenceParams(silenceForm);
+      if (!parsed.ok) return h;
+      const targets = resolveRange(h.present, silenceForm.fromId, silenceForm.toId);
+      if (!targets) return h;
+      // 应用时基于 history.present 即时重算，与面板预览使用同一套规则
+      const plan = planSilenceSnap(targets, waveform.data, parsed.params);
+      if (!plan || plan.moved === 0) return h;
+      return {
+        past: [...h.past, h.present],
+        present: applySilenceSnap(h.present, plan),
+        future: [],
+      };
+    });
+  }, [silenceForm, waveform]);
+
+  const importVideo = useCallback(    (file: File) => {
       setVideoUrl((old) => {
         if (old) URL.revokeObjectURL(old);
         return URL.createObjectURL(file);
@@ -250,6 +284,8 @@ export default function App() {
         hasSelection={selectedId !== null}
         showMerge={showMerge}
         showDrift={showDrift}
+        showSilence={showSilence}
+        canSilence={waveformReady}
         onImportSrt={importSrt}
         onImportVideo={importVideo}
         onLoadSample={loadSample}
@@ -261,13 +297,22 @@ export default function App() {
         onZoom={setPxPerSec}
         onDeleteSelected={deleteSelected}
         onToggleMerge={() => {
-          // 两个侧栏互斥，避免同时挤压视频区
+          // 侧栏互斥，避免同时挤压视频区
           setShowMerge((v) => !v);
           setShowDrift(false);
+          setShowSilence(false);
         }}
         onToggleDrift={() => {
           setShowDrift((v) => !v);
           setShowMerge(false);
+          setShowSilence(false);
+        }}
+        onToggleSilence={() => {
+          // 三个侧栏互斥；未就绪时按钮禁用，这里再兜底一次
+          if (!waveformReady) return;
+          setShowSilence((v) => !v);
+          setShowMerge(false);
+          setShowDrift(false);
         }}
       />
 
@@ -301,6 +346,17 @@ export default function App() {
               form={driftForm}
               onFormChange={setDriftForm}
               onApply={applyDriftCalibration}
+            />
+          )}
+          {showSilence && waveformReady && (
+            <SilencePanel
+              subs={subs}
+              waveform={waveform}
+              form={silenceForm}
+              onFormChange={setSilenceForm}
+              selectedId={selectedId}
+              onJump={jumpTo}
+              onApply={applySilence}
             />
           )}
         </section>
