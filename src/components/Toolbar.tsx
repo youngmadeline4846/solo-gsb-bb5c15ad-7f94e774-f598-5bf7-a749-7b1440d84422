@@ -12,6 +12,9 @@ interface ToolbarProps {
   hasSelection: boolean;
   showMerge: boolean;
   showDrift: boolean;
+  showSilence: boolean;
+  /** 音频波形是否就绪（静音吸附仅在就绪时可用） */
+  waveformReady: boolean;
   onImportSrt: (file: File) => void;
   onImportVideo: (file: File) => void;
   onLoadSample: () => void;
@@ -24,6 +27,7 @@ interface ToolbarProps {
   onDeleteSelected: () => void;
   onToggleMerge: () => void;
   onToggleDrift: () => void;
+  onToggleSilence: () => void;
 }
 
 export default function Toolbar(props: ToolbarProps) {
@@ -100,6 +104,20 @@ export default function Toolbar(props: ToolbarProps) {
           title={props.hasSubs ? '打开双锚点漂移校准侧栏' : '请先导入当前字幕'}
         >
           ⚓ 漂移校准
+        </button>
+        <button
+          className={`btn ${props.showSilence ? 'primary' : ''}`}
+          disabled={!props.hasSubs || !props.waveformReady}
+          onClick={props.onToggleSilence}
+          title={
+            !props.hasSubs
+              ? '请先导入当前字幕'
+              : props.waveformReady
+                ? '打开静音吸附侧栏'
+                : '请先导入含音轨的视频，待音频波形就绪后可用'
+          }
+        >
+          🔇 静音吸附
         </button>
       </div>
 

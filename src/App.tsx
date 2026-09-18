@@ -4,6 +4,13 @@ import { parseSrt, parseTimeInput, serializeSrt } from './srt';
 import { detectIssues } from './issues';
 import { alignSubtitles, applyMerge } from './merge';
 import { applyDrift, planDrift, validateDrift } from './drift';
+import {
+  applySilenceSnap,
+  planSilenceSnap,
+  selectRange,
+  validSettings,
+  type SilenceSettings,
+} from './silence';
 import { SAMPLE_SRT } from './sample';
 import { useWaveform } from './useWaveform';
 import Toolbar from './components/Toolbar';
@@ -13,6 +20,8 @@ import IssuesPanel from './components/IssuesPanel';
 import RevisionMergePanel from './components/RevisionMergePanel';
 import DriftPanel, { EMPTY_DRIFT_FORM } from './components/DriftPanel';
 import type { DriftForm } from './components/DriftPanel';
+import SilencePanel, { EMPTY_SILENCE_FORM } from './components/SilencePanel';
+import type { SilenceForm } from './components/SilencePanel';
 import './styles.css';
 
 interface History {
@@ -38,8 +47,11 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showMerge, setShowMerge] = useState(false);
   const [showDrift, setShowDrift] = useState(false);
+  const [showSilence, setShowSilence] = useState(false);
   // 漂移校准表单（锚点选择 + 目标时间输入），面板关闭后保留，重新导入字幕时重置
   const [driftForm, setDriftForm] = useState<DriftForm>(EMPTY_DRIFT_FORM);
+  // 静音吸附表单（连续区间 + 四个检测参数），同上，重新导入字幕时重置
+  const [silenceForm, setSilenceForm] = useState<SilenceForm>(EMPTY_SILENCE_FORM);
   // 修订稿独立于当前字幕保存：导入不会替换当前时间轴
   const [revision, setRevision] = useState<Subtitle[]>([]);
   const [revisionName, setRevisionName] = useState('');
@@ -102,6 +114,7 @@ export default function App() {
     setRevision([]);
     setRevisionName('');
     setDriftForm(EMPTY_DRIFT_FORM);
+    setSilenceForm(EMPTY_SILENCE_FORM);
   }, []);
 
   const importSrt = useCallback(
@@ -155,6 +168,30 @@ export default function App() {
       };
     });
   }, [driftForm]);
+
+  // 应用静音吸附：仅调整所选连续区间内字幕的起止时间，整批作为一次撤销/重做操作
+  const applySilence = useCallback(() => {
+    const data = waveform.data;
+    if (waveform.status !== 'ready' || !data) return;
+    const settings: SilenceSettings = {
+      threshold: silenceForm.threshold,
+      minSilenceMs: silenceForm.minSilenceMs,
+      maxSnapMs: silenceForm.maxSnapMs,
+      minDurationMs: silenceForm.minDurationMs,
+    };
+    setHistory((h) => {
+      // 基于 history.present 即时重算，与面板预览使用同一套规则
+      const range = selectRange(h.present, silenceForm.fromId, silenceForm.toId);
+      if (range.length === 0 || !validSettings(settings)) return h;
+      const plan = planSilenceSnap(range, data, settings);
+      if (!plan || plan.snappedCount === 0 || plan.changed === 0) return h;
+      return {
+        past: [...h.past, h.present],
+        present: applySilenceSnap(h.present, plan),
+        future: [],
+      };
+    });
+  }, [waveform.status, waveform.data, silenceForm]);
 
   const importVideo = useCallback(
     (file: File) => {
@@ -250,6 +287,8 @@ export default function App() {
         hasSelection={selectedId !== null}
         showMerge={showMerge}
         showDrift={showDrift}
+        showSilence={showSilence}
+        waveformReady={waveform.status === 'ready'}
         onImportSrt={importSrt}
         onImportVideo={importVideo}
         onLoadSample={loadSample}
@@ -264,10 +303,18 @@ export default function App() {
           // 两个侧栏互斥，避免同时挤压视频区
           setShowMerge((v) => !v);
           setShowDrift(false);
+          setShowSilence(false);
         }}
         onToggleDrift={() => {
           setShowDrift((v) => !v);
           setShowMerge(false);
+          setShowSilence(false);
+        }}
+        onToggleSilence={() => {
+          // 三个侧栏互斥，避免同时挤压视频区
+          setShowSilence((v) => !v);
+          setShowMerge(false);
+          setShowDrift(false);
         }}
       />
 
@@ -301,6 +348,18 @@ export default function App() {
               form={driftForm}
               onFormChange={setDriftForm}
               onApply={applyDriftCalibration}
+            />
+          )}
+          {showSilence && (
+            <SilencePanel
+              subs={subs}
+              waveformData={waveform.data}
+              waveformStatus={waveform.status}
+              form={silenceForm}
+              onFormChange={setSilenceForm}
+              onApply={applySilence}
+              onJump={jumpTo}
+              selectedId={selectedId}
             />
           )}
         </section>
